@@ -3,16 +3,16 @@
 namespace Amp\Socket;
 
 use Amp\ByteStream\ClosedException;
-use Amp\Failure;
-use Amp\Promise;
 
-class ServerSocket extends Socket {
+class ServerSocket extends Socket
+{
     /** @inheritdoc */
-    public function enableCrypto(): Promise {
+    public function enableCrypto(): void
+    {
         if (($resource = $this->getResource()) === null) {
-            return new Failure(new ClosedException("The socket has been closed"));
+            throw new ClosedException("The socket has been closed");
         }
 
-        return Internal\enableCrypto($resource, [], true);
+        Internal\enableCrypto($resource, [], true);
     }
 }

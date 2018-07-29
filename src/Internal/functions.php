@@ -2,13 +2,10 @@
 
 namespace Amp\Socket\Internal;
 
-use Amp\Deferred;
-use Amp\Failure;
 use Amp\Loop;
-use Amp\Promise;
 use Amp\Socket\CryptoException;
-use Amp\Success;
-use function Amp\call;
+use Concurrent\Deferred;
+use Concurrent\Task;
 
 /**
  * Parse an URI into [scheme, host, port].
@@ -21,7 +18,8 @@ use function Amp\call;
  *
  * @internal
  */
-function parseUri(string $uri): array {
+function parseUri(string $uri): array
+{
     if (\stripos($uri, "unix://") === 0 || \stripos($uri, "udg://") === 0) {
         list($scheme, $path) = \explode("://", $uri, 2);
         return [$scheme, \ltrim($path, "/"), 0];
@@ -63,13 +61,12 @@ function parseUri(string $uri): array {
  * @param array    $options
  * @param bool     $force Forces enabling without prior disabling if already enabled.
  *
- * @return Promise
- *
  * @throws \Error If an invalid options array has been passed.
  *
  * @internal
  */
-function enableCrypto($socket, array $options = [], bool $force = false): Promise {
+function enableCrypto($socket, array $options = [], bool $force = false): void
+{
     $ctx = \stream_context_get_options($socket);
 
     if (!$force && !empty($ctx['ssl']) && !empty($ctx["ssl"]["_enabled"])) {
@@ -78,13 +75,11 @@ function enableCrypto($socket, array $options = [], bool $force = false): Promis
 
         // Use weak comparison so the order of the items doesn't matter
         if ($ctx == $cmp) {
-            return new Success;
+            return;
         }
 
-        return call(function () use ($socket, $options) {
-            yield disableCrypto($socket);
-            return enableCrypto($socket, $options);
-        });
+        disableCrypto($socket);
+        enableCrypto($socket, $options);
     }
 
     $options["ssl"]["_enabled"] = true; // avoid recursion
@@ -96,39 +91,35 @@ function enableCrypto($socket, array $options = [], bool $force = false): Promis
 
     // Yes, that function can return true / false / 0, don't use weak comparisons.
     if ($result === true) {
-        return new Success($socket);
+        return;
     }
 
     if ($result === false) {
-        return new Failure(new CryptoException(
+        throw new CryptoException(
             "Crypto negotiation failed: " . (\error_get_last()["message"] ?? "Unknown error")
-        ));
+        );
     }
 
-    return call(function () use ($socket) {
-        $deferred = new Deferred;
+    $deferred = new Deferred;
 
-        $watcher = Loop::onReadable($socket, function (string $watcher, $socket, Deferred $deferred) {
-            $result = @\stream_socket_enable_crypto($socket, $enable = true);
+    $watcher = Loop::onReadable($socket, function (string $watcher, $socket, Deferred $deferred) {
+        $result = @\stream_socket_enable_crypto($socket, $enable = true);
 
-            // If $result is 0, just wait for the next invocation
-            if ($result === true) {
-                $deferred->resolve();
-            } elseif ($result === false) {
-                $deferred->fail(new CryptoException("Crypto negotiation failed: " . (\feof($socket)
-                        ? "Connection reset by peer"
-                        : \error_get_last()["message"])));
-            }
-        }, $deferred);
-
-        try {
-            yield $deferred->promise();
-        } finally {
-            Loop::cancel($watcher);
+        // If $result is 0, just wait for the next invocation
+        if ($result === true) {
+            $deferred->resolve();
+        } elseif ($result === false) {
+            $deferred->fail(new CryptoException("Crypto negotiation failed: " . (\feof($socket)
+                    ? "Connection reset by peer"
+                    : \error_get_last()["message"])));
         }
+    }, $deferred);
 
-        return $socket;
-    });
+    try {
+        Task::await($deferred->awaitable());
+    } finally {
+        Loop::cancel($watcher);
+    }
 }
 
 /**
@@ -136,16 +127,13 @@ function enableCrypto($socket, array $options = [], bool $force = false): Promis
  *
  * @param resource $socket
  *
- * @return Promise
- *
  * @internal
  */
-function disableCrypto($socket): Promise {
+function disableCrypto($socket): void
+{
     // note that disabling crypto *ALWAYS* returns false, immediately
     \stream_context_set_option($socket, ["ssl" => ["_enabled" => false]]);
     @\stream_socket_enable_crypto($socket, false);
-
-    return new Success;
 }
 
 /**
@@ -157,11 +145,13 @@ function disableCrypto($socket): Promise {
  *
  * @throws \Error If an invalid option has been passed.
  */
-function normalizeBindToOption(string $bindTo = null) {
+function normalizeBindToOption(string $bindTo = null)
+{
     if ($bindTo === null) {
-        // all fine
-        return null;
-    } elseif (\preg_match("/\\[(?P<ip>[0-9a-f:]+)\\](:(?P<port>\\d+))?$/", $bindTo ?? "", $match)) {
+        return null; // all fine
+    }
+
+    if (\preg_match("/\\[(?P<ip>[0-9a-f:]+)\\](:(?P<port>\\d+))?$/", $bindTo ?? "", $match)) {
         $ip = $match['ip'];
         $port = $match['port'] ?? 0;
 
@@ -201,7 +191,8 @@ function normalizeBindToOption(string $bindTo = null) {
  *
  * @return string|null
  */
-function cleanupSocketName($address) {
+function cleanupSocketName($address)
+{
     // https://3v4l.org/5C1lo
     if ($address === false || $address === "\0") {
         return null;

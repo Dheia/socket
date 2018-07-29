@@ -2,17 +2,13 @@
 
 namespace Amp\Socket;
 
-use Amp\CancellationToken;
-use Amp\CancelledException;
-use Amp\Failure;
+use Amp\Cancellation\Token;
 use Amp\Loop;
-use Amp\Promise;
 use Amp\Struct;
-use Amp\Success;
 use Amp\Uri\Uri;
-use function Amp\call;
 
-final class BasicSocketPool implements SocketPool {
+final class BasicSocketPool implements SocketPool
+{
     private $sockets = [];
     private $socketIdUriMap = [];
     private $pendingCount = [];
@@ -20,12 +16,14 @@ final class BasicSocketPool implements SocketPool {
     private $idleTimeout;
     private $socketContext;
 
-    public function __construct(int $idleTimeout = 10000, ClientConnectContext $socketContext = null) {
+    public function __construct(int $idleTimeout = 10000, ClientConnectContext $socketContext = null)
+    {
         $this->idleTimeout = $idleTimeout;
         $this->socketContext = $socketContext ?? new ClientConnectContext;
     }
 
-    private function normalizeUri(string $uri): string {
+    private function normalizeUri(string $uri): string
+    {
         if (stripos($uri, 'unix://') === 0) {
             return $uri;
         }
@@ -34,15 +32,12 @@ final class BasicSocketPool implements SocketPool {
     }
 
     /** @inheritdoc */
-    public function checkout(string $uri, CancellationToken $token = null): Promise {
+    public function checkout(string $uri, Token $token = null): ClientSocket
+    {
         // A request might already be cancelled before we reach the checkout, so do not even attempt to checkout in that
         // case. The weird logic is required to throw the token's exception instead of creating a new one.
-        if ($token && $token->isRequested()) {
-            try {
-                $token->throwIfRequested();
-            } catch (CancelledException $e) {
-                return new Failure($e);
-            }
+        if ($token) {
+            $token->throwIfRequested();
         }
 
         $uri = $this->normalizeUri($uri);
@@ -54,7 +49,9 @@ final class BasicSocketPool implements SocketPool {
         foreach ($this->sockets[$uri] as $socketId => $socket) {
             if (!$socket->isAvailable) {
                 continue;
-            } elseif (!\is_resource($socket->resource) || \feof($socket->resource)) {
+            }
+
+            if (!\is_resource($socket->resource) || \feof($socket->resource)) {
                 $this->clear(new ClientSocket($socket->resource));
                 continue;
             }
@@ -65,52 +62,52 @@ final class BasicSocketPool implements SocketPool {
                 Loop::disable($socket->idleWatcher);
             }
 
-            return new Success(new ClientSocket($socket->resource));
+            return new ClientSocket($socket->resource);
         }
 
         return $this->checkoutNewSocket($uri, $token);
     }
 
-    private function checkoutNewSocket(string $uri, CancellationToken $token = null): Promise {
-        return call(function () use ($uri, $token) {
-            $this->pendingCount[$uri] = ($this->pendingCount[$uri] ?? 0) + 1;
+    private function checkoutNewSocket(string $uri, Token $token = null): ClientSocket
+    {
+        $this->pendingCount[$uri] = ($this->pendingCount[$uri] ?? 0) + 1;
 
-            try {
-                /** @var ClientSocket $rawSocket */
-                $rawSocket = yield connect($uri, $this->socketContext, $token);
-            } finally {
-                if (--$this->pendingCount[$uri] === 0) {
-                    unset($this->pendingCount[$uri]);
-                }
+        try {
+            $clientSocket = connect($uri, $this->socketContext, $token);
+        } finally {
+            if (--$this->pendingCount[$uri] === 0) {
+                unset($this->pendingCount[$uri]);
             }
+        }
 
-            $socketId = (int) $rawSocket->getResource();
+        $socketId = $clientSocket->getResourceId();
 
-            $socket = new class {
-                use Struct;
+        $socket = new class
+        {
+            use Struct;
 
-                public $id;
-                public $uri;
-                public $resource;
-                public $isAvailable;
-                public $idleWatcher;
-            };
+            public $id;
+            public $uri;
+            public $resource;
+            public $isAvailable;
+            public $idleWatcher;
+        };
 
-            $socket->id = $socketId;
-            $socket->uri = $uri;
-            $socket->resource = $rawSocket->getResource();
-            $socket->isAvailable = false;
+        $socket->id = $socketId;
+        $socket->uri = $uri;
+        $socket->resource = $clientSocket->getResource();
+        $socket->isAvailable = false;
 
-            $this->sockets[$uri][$socketId] = $socket;
-            $this->socketIdUriMap[$socketId] = $uri;
+        $this->sockets[$uri][$socketId] = $socket;
+        $this->socketIdUriMap[$socketId] = $uri;
 
-            return $rawSocket;
-        });
+        return $clientSocket;
     }
 
     /** @inheritdoc */
-    public function clear(ClientSocket $socket) {
-        $socketId = (int) $socket->getResource();
+    public function clear(ClientSocket $socket): void
+    {
+        $socketId = $socket->getResourceId();
 
         if (!isset($this->socketIdUriMap[$socketId])) {
             throw new \Error(
@@ -136,8 +133,9 @@ final class BasicSocketPool implements SocketPool {
     }
 
     /** @inheritdoc */
-    public function checkin(ClientSocket $socket) {
-        $socketId = (int) $socket->getResource();
+    public function checkin(ClientSocket $socket): void
+    {
+        $socketId = $socket->getResourceId();
 
         if (!isset($this->socketIdUriMap[$socketId])) {
             throw new \Error(

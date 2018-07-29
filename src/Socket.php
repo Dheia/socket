@@ -7,17 +7,19 @@ use Amp\ByteStream\InputStream;
 use Amp\ByteStream\OutputStream;
 use Amp\ByteStream\ResourceInputStream;
 use Amp\ByteStream\ResourceOutputStream;
-use Amp\Failure;
-use Amp\Promise;
 
-abstract class Socket implements InputStream, OutputStream {
-    const DEFAULT_CHUNK_SIZE = ResourceInputStream::DEFAULT_CHUNK_SIZE;
+abstract class Socket implements InputStream, OutputStream
+{
+    public const DEFAULT_CHUNK_SIZE = ResourceInputStream::DEFAULT_CHUNK_SIZE;
 
-    /** @var \Amp\ByteStream\ResourceInputStream */
+    /** @var ResourceInputStream */
     private $reader;
 
-    /** @var \Amp\ByteStream\ResourceOutputStream */
+    /** @var ResourceOutputStream */
     private $writer;
+
+    /** @var int */
+    private $streamId;
 
     /**
      * @param resource $resource Stream resource.
@@ -25,7 +27,9 @@ abstract class Socket implements InputStream, OutputStream {
      *
      * @throws \Error If a stream resource is not given for $resource.
      */
-    public function __construct($resource, int $chunkSize = self::DEFAULT_CHUNK_SIZE) {
+    public function __construct($resource, int $chunkSize = self::DEFAULT_CHUNK_SIZE)
+    {
+        $this->streamId = (int) $resource;
         $this->reader = new ResourceInputStream($resource, $chunkSize);
         $this->writer = new ResourceOutputStream($resource, $chunkSize);
     }
@@ -35,48 +39,59 @@ abstract class Socket implements InputStream, OutputStream {
      *
      * @return resource|null
      */
-    public function getResource() {
+    public function getResource()
+    {
         return $this->reader->getResource();
+    }
+
+    /**
+     * Raw stream socket resource ID.
+     *
+     * @return int
+     */
+    public function getResourceId(): int
+    {
+        return $this->streamId;
     }
 
     /**
      * Enables encryption on this socket.
      *
-     * @return Promise
+     * @throws ClosedException
      */
-    abstract public function enableCrypto(): Promise;
+    abstract public function enableCrypto(): void;
 
     /**
      * Disables encryption on this socket.
      *
-     * @return Promise
+     * @throws ClosedException
      */
-    public function disableCrypto(): Promise {
+    public function disableCrypto(): void
+    {
         if (($resource = $this->reader->getResource()) === null) {
-            return new Failure(new ClosedException("The socket has been closed"));
+            throw new ClosedException("The socket has been closed");
         }
 
-        return Internal\disableCrypto($resource);
+        Internal\disableCrypto($resource);
     }
 
     /** @inheritdoc */
-    public function read(): Promise {
+    public function read(): ?string
+    {
         return $this->reader->read();
     }
 
     /** @inheritdoc */
-    public function write(string $data): Promise {
-        return $this->writer->write($data);
+    public function write(string $data): void
+    {
+        $this->writer->write($data);
     }
 
     /** @inheritdoc */
-    public function end(string $data = ""): Promise {
-        $promise = $this->writer->end($data);
-        $promise->onResolve(function () {
-            $this->close();
-        });
-
-        return $promise;
+    public function end(string $data = ""): void
+    {
+        $this->writer->end($data);
+        $this->close();
     }
 
     /**
@@ -84,7 +99,8 @@ abstract class Socket implements InputStream, OutputStream {
      *
      * @see Loop::reference()
      */
-    public function reference() {
+    public function reference(): void
+    {
         $this->reader->reference();
     }
 
@@ -93,27 +109,32 @@ abstract class Socket implements InputStream, OutputStream {
      *
      * @see Loop::unreference()
      */
-    public function unreference() {
+    public function unreference(): void
+    {
         $this->reader->unreference();
     }
 
     /**
      * Force closes the socket, failing any pending reads or writes.
      */
-    public function close() {
+    public function close(): void
+    {
         $this->reader->close();
         $this->writer->close();
     }
 
-    public function getLocalAddress() {
+    public function getLocalAddress(): ?string
+    {
         return $this->getAddress(false);
     }
 
-    public function getRemoteAddress() {
+    public function getRemoteAddress(): ?string
+    {
         return $this->getAddress(true);
     }
 
-    private function getAddress(bool $wantPeer) {
+    private function getAddress(bool $wantPeer): ?string
+    {
         $remoteCleaned = Internal\cleanupSocketName(@\stream_socket_get_name($this->getResource(), $wantPeer));
 
         if ($remoteCleaned !== null) {

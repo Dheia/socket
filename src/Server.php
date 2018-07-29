@@ -2,12 +2,12 @@
 
 namespace Amp\Socket;
 
-use Amp\Deferred;
 use Amp\Loop;
-use Amp\Promise;
-use Amp\Success;
+use Concurrent\Deferred;
+use Concurrent\Task;
 
-class Server {
+class Server
+{
     /** @var resource Stream socket server resource. */
     private $socket;
 
@@ -29,7 +29,8 @@ class Server {
      *
      * @throws \Error If a stream resource is not given for $socket.
      */
-    public function __construct($socket, int $chunkSize = Socket::DEFAULT_CHUNK_SIZE) {
+    public function __construct($socket, int $chunkSize = Socket::DEFAULT_CHUNK_SIZE)
+    {
         if (!\is_resource($socket) || \get_resource_type($socket) !== 'stream') {
             throw new \Error('Invalid resource given to constructor!');
         }
@@ -41,7 +42,10 @@ class Server {
         \stream_set_blocking($this->socket, false);
 
         $acceptor = &$this->acceptor;
-        $this->watcher = Loop::onReadable($this->socket, static function ($watcher, $socket) use (&$acceptor, $chunkSize) {
+        $this->watcher = Loop::onReadable($this->socket, static function ($watcher, $socket) use (
+            &$acceptor,
+            $chunkSize
+        ) {
             // Error reporting suppressed since stream_socket_accept() emits E_WARNING on client accept failure.
             if (!$client = @\stream_socket_accept($socket, 0)) {  // Timeout of 0 to be non-blocking.
                 return; // Accepting client failed.
@@ -62,7 +66,8 @@ class Server {
     /**
      * Automatically cancels the loop watcher.
      */
-    public function __destruct() {
+    public function __destruct()
+    {
         if (!$this->socket) {
             return;
         }
@@ -71,34 +76,36 @@ class Server {
     }
 
     /**
-     * @return \Amp\Promise<ServerSocket|null>
+     * @return ServerSocket|null
      *
-     * @throws \Amp\Socket\PendingAcceptError If another accept request is pending.
+     * @throws PendingAcceptError If another accept request is pending.
      */
-    public function accept(): Promise {
+    public function accept(): ?ServerSocket
+    {
         if ($this->acceptor) {
             throw new PendingAcceptError;
         }
 
         if (!$this->socket) {
-            return new Success; // Resolve with null when server is closed.
+            return null; // Resolve with null when server is closed.
         }
 
         // Error reporting suppressed since stream_socket_accept() emits E_WARNING on client accept failure.
         if ($client = @\stream_socket_accept($this->socket, 0)) { // Timeout of 0 to be non-blocking.
-            return new Success(new ServerSocket($client, $this->chunkSize));
+            return new ServerSocket($client, $this->chunkSize);
         }
 
         $this->acceptor = new Deferred;
         Loop::enable($this->watcher);
 
-        return $this->acceptor->promise();
+        return Task::await($this->acceptor->awaitable());
     }
 
     /**
      * Closes the server and stops accepting connections. Any socket clients accepted will not be closed.
      */
-    public function close() {
+    public function close(): void
+    {
         if ($this->socket) {
             \fclose($this->socket);
         }
@@ -109,11 +116,13 @@ class Server {
     /**
      * @return string|null
      */
-    public function getAddress() {
+    public function getAddress(): ?string
+    {
         return $this->address;
     }
 
-    private function free() {
+    private function free(): void
+    {
         Loop::cancel($this->watcher);
 
         $this->socket = null;
@@ -129,7 +138,8 @@ class Server {
      *
      * @return resource|null
      */
-    public function getResource() {
+    public function getResource()
+    {
         return $this->socket;
     }
 }

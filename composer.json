@@ -2,6 +2,8 @@
     "name": "amphp/socket",
     "homepage":  "https://github.com/amphp/socket",
     "description": "Async socket connection / server tools for Amp.",
+    "minimum-stability": "dev",
+    "prefer-stable": true,
     "support": {
         "issues": "https://github.com/amphp/socket/issues"
     },
@@ -30,16 +32,16 @@
         }
     ],
     "require": {
-        "php": ">=7.0",
-        "amphp/amp": "^2",
-        "amphp/dns": "^0.9",
-        "amphp/byte-stream": "^1.1",
+        "php": ">=7.2",
+        "amphp/amp": "dev-ext-async",
+        "amphp/dns": "dev-ext-async",
+        "amphp/byte-stream": "dev-ext-async",
         "amphp/uri": "^0.1"
     },
     "require-dev": {
-        "amphp/phpunit-util": "^1",
-        "phpunit/phpunit": "^6",
-        "friendsofphp/php-cs-fixer": "^2.3"
+        "amphp/php-cs-fixer-config": "dev-master",
+        "amphp/phpunit-util": "dev-ext-async",
+        "phpunit/phpunit": "^6"
     },
     "autoload": {
         "psr-4": {
@@ -57,7 +59,7 @@
     },
     "config": {
         "platform": {
-            "php": "7.0.0"
+            "php": "7.2.0"
         }
     },
     "scripts": {

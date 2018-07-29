@@ -2,30 +2,32 @@
 
 namespace Amp\Socket;
 
-use Amp\CancellationToken;
-use Amp\Deferred;
+use Amp\Cancellation\CancelledException;
+use Amp\Cancellation\NullToken;
+use Amp\Cancellation\Token;
 use Amp\Dns;
 use Amp\Loop;
-use Amp\NullCancellationToken;
-use Amp\Promise;
 use Amp\TimeoutException;
-use function Amp\call;
+use Concurrent\Deferred;
+use Concurrent\Task;
+use function Amp\timeout;
 
 /**
  * Listen for client connections on the specified server address.
  *
  * If you want to accept TLS connections, you have to use `yield $socket->enableCrypto()` after accepting new clients.
  *
- * @param string $uri URI in scheme://host:port format. TCP is assumed if no scheme is present.
+ * @param string              $uri URI in scheme://host:port format. TCP is assumed if no scheme is present.
  * @param ServerListenContext $socketContext Context options for listening.
- * @param ServerTlsContext $tlsContext Context options for TLS connections.
+ * @param ServerTlsContext    $tlsContext Context options for TLS connections.
  *
  * @return Server
  *
  * @throws SocketException If binding to the specified URI failed.
  * @throws \Error If an invalid scheme is given.
  */
-function listen(string $uri, ServerListenContext $socketContext = null, ServerTlsContext $tlsContext = null): Server {
+function listen(string $uri, ServerListenContext $socketContext = null, ServerTlsContext $tlsContext = null): Server
+{
     $socketContext = $socketContext ?? new ServerListenContext;
 
     $scheme = \strstr($uri, "://", true);
@@ -62,123 +64,126 @@ function listen(string $uri, ServerListenContext $socketContext = null, ServerTl
 /**
  * Asynchronously establish a socket connection to the specified URI.
  *
- * @param string                 $uri URI in scheme://host:port format. TCP is assumed if no scheme is present.
- * @param ClientConnectContext   $socketContext Socket connect context to use when connecting.
- * @param CancellationToken|null $token
+ * @param string               $uri URI in scheme://host:port format. TCP is assumed if no scheme is present.
+ * @param ClientConnectContext $socketContext Socket connect context to use when connecting.
+ * @param Token|null           $token
  *
- * @return Promise<\Amp\Socket\ClientSocket>
+ * @return ClientSocket
+ *
+ * @throws CancelledException If the operation was cancelled.
  */
-function connect(string $uri, ClientConnectContext $socketContext = null, CancellationToken $token = null): Promise {
-    return call(function () use ($uri, $socketContext, $token) {
-        $socketContext = $socketContext ?? new ClientConnectContext;
-        $token = $token ?? new NullCancellationToken;
-        $attempt = 0;
-        $uris = [];
-        $failures = [];
+function connect(string $uri, ClientConnectContext $socketContext = null, Token $token = null): ClientSocket
+{
+    $socketContext = $socketContext ?? new ClientConnectContext;
+    $token = $token ?? new NullToken;
+    $attempt = 0;
+    $uris = [];
+    $failures = [];
 
-        list($scheme, $host, $port) = Internal\parseUri($uri);
+    [$scheme, $host, $port] = Internal\parseUri($uri);
 
-        if ($host[0] === '[') {
-            $host = substr($host, 1, -1);
+    if ($host[0] === '[') {
+        $host = substr($host, 1, -1);
+    }
+
+    if ($port === 0 || @\inet_pton($host)) {
+        // Host is already an IP address or file path.
+        $uris = [$uri];
+    } else {
+        // Host is not an IP address, so resolve the domain name.
+        $records = Dns\resolve($host, $socketContext->getDnsTypeRestriction());
+
+        // Usually the faster response should be preferred, but we don't have a reliable way of determining IPv6
+        // support, so we always prefer IPv4 here.
+        \usort($records, function (Dns\Record $a, Dns\Record $b) {
+            return $a->getType() - $b->getType();
+        });
+
+        foreach ($records as $record) {
+            /** @var Dns\Record $record */
+            if ($record->getType() === Dns\Record::AAAA) {
+                $uris[] = \sprintf("%s://[%s]:%d", $scheme, $record->getValue(), $port);
+            } else {
+                $uris[] = \sprintf("%s://%s:%d", $scheme, $record->getValue(), $port);
+            }
+        }
+    }
+
+    $flags = \STREAM_CLIENT_CONNECT | \STREAM_CLIENT_ASYNC_CONNECT;
+    $timeout = $socketContext->getConnectTimeout();
+
+    foreach ($uris as $builtUri) {
+        if ($token) {
+            $token->throwIfRequested();
         }
 
-        if ($port === 0 || @\inet_pton($host)) {
-            // Host is already an IP address or file path.
-            $uris = [$uri];
-        } else {
-            // Host is not an IP address, so resolve the domain name.
-            $records = yield Dns\resolve($host, $socketContext->getDnsTypeRestriction());
+        try {
+            $context = \stream_context_create($socketContext->toStreamContextArray());
 
-            // Usually the faster response should be preferred, but we don't have a reliable way of determining IPv6
-            // support, so we always prefer IPv4 here.
-            \usort($records, function (Dns\Record $a, Dns\Record $b) {
-                return $a->getType() - $b->getType();
+            if (!$socket = @\stream_socket_client($builtUri, $errno, $errstr, null, $flags, $context)) {
+                throw new ConnectException(\sprintf(
+                    "Connection to %s failed: [Error #%d] %s%s",
+                    $uri,
+                    $errno,
+                    $errstr,
+                    $failures ? "; previous attempts: " . \implode($failures) : ""
+                ), $errno);
+            }
+
+            \stream_set_blocking($socket, false);
+
+            $deferred = new Deferred;
+            $watcher = Loop::onWritable($socket, function () use ($deferred) {
+                $deferred->resolve();
             });
 
-            foreach ($records as $record) {
-                /** @var Dns\Record $record */
-                if ($record->getType() === Dns\Record::AAAA) {
-                    $uris[] = \sprintf("%s://[%s]:%d", $scheme, $record->getValue(), $port);
-                } else {
-                    $uris[] = \sprintf("%s://%s:%d", $scheme, $record->getValue(), $port);
-                }
-            }
-        }
-
-        $flags = \STREAM_CLIENT_CONNECT | \STREAM_CLIENT_ASYNC_CONNECT;
-        $timeout = $socketContext->getConnectTimeout();
-
-        foreach ($uris as $builtUri) {
-            if ($token) {
-                $token->throwIfRequested();
-            }
-
             try {
-                $context = \stream_context_create($socketContext->toStreamContextArray());
-
-                if (!$socket = @\stream_socket_client($builtUri, $errno, $errstr, null, $flags, $context)) {
-                    throw new ConnectException(\sprintf(
-                        "Connection to %s failed: [Error #%d] %s%s",
-                        $uri,
-                        $errno,
-                        $errstr,
-                        $failures ? "; previous attempts: " . \implode($failures) : ""
-                    ), $errno);
-                }
-
-                \stream_set_blocking($socket, false);
-
-                $deferred = new Deferred;
-                $watcher = Loop::onWritable($socket, [$deferred, 'resolve']);
-
-                try {
-                    yield Promise\timeout($deferred->promise(), $timeout);
-                } catch (TimeoutException $e) {
-                    throw new ConnectException(\sprintf(
-                        "Connecting to %s failed: timeout exceeded (%d ms)%s",
-                        $uri,
-                        $timeout,
-                        $failures ? "; previous attempts: " . \implode($failures) : ""
-                    ), 110); // See ETIMEDOUT in http://www.virtsync.com/c-error-codes-include-errno
-                } finally {
-                    Loop::cancel($watcher);
-                }
-
-                // The following hack looks like the only way to detect connection refused errors with PHP's stream sockets.
-                if (\stream_socket_get_name($socket, true) === false) {
-                    \fclose($socket);
-                    throw new ConnectException(\sprintf(
-                        "Connection to %s refused%s",
-                        $uri,
-                        $failures ? "; previous attempts: " . \implode($failures) : ""
-                    ), 111); // See ECONNREFUSED in http://www.virtsync.com/c-error-codes-include-errno
-                }
-            } catch (\Exception $e) {
-                // Includes only error codes used in this file, as error codes on other OS families might be different.
-                // In fact, this might show a confusing error message on OS families that return 110 or 111 by itself.
-                $knownReasons = [
-                    110 => "connection timeout",
-                    111 => "connection refused",
-                ];
-
-                $code = $e->getCode();
-                $reason = $knownReasons[$code] ?? ("Error #" . $code);
-
-                if (++$attempt === $socketContext->getMaxAttempts()) {
-                    break;
-                }
-
-                $failures[] = "{$uri} ({$reason})";
-
-                continue; // Could not connect to host, try next host in the list.
+                Task::await(timeout($deferred->awaitable(), $timeout));
+            } catch (TimeoutException $e) {
+                throw new ConnectException(\sprintf(
+                    "Connecting to %s failed: timeout exceeded (%d ms)%s",
+                    $uri,
+                    $timeout,
+                    $failures ? "; previous attempts: " . \implode($failures) : ""
+                ), 110); // See ETIMEDOUT in http://www.virtsync.com/c-error-codes-include-errno
+            } finally {
+                Loop::cancel($watcher);
             }
 
-            return new ClientSocket($socket);
+            // The following hack looks like the only way to detect connection refused errors with PHP's stream sockets.
+            if (\stream_socket_get_name($socket, true) === false) {
+                \fclose($socket);
+                throw new ConnectException(\sprintf(
+                    "Connection to %s refused%s",
+                    $uri,
+                    $failures ? "; previous attempts: " . \implode($failures) : ""
+                ), 111); // See ECONNREFUSED in http://www.virtsync.com/c-error-codes-include-errno
+            }
+        } catch (\Exception $e) {
+            // Includes only error codes used in this file, as error codes on other OS families might be different.
+            // In fact, this might show a confusing error message on OS families that return 110 or 111 by itself.
+            $knownReasons = [
+                110 => "connection timeout",
+                111 => "connection refused",
+            ];
+
+            $code = $e->getCode();
+            $reason = $knownReasons[$code] ?? ("Error #" . $code);
+
+            if (++$attempt === $socketContext->getMaxAttempts()) {
+                break;
+            }
+
+            $failures[] = "{$uri} ({$reason})";
+
+            continue; // Could not connect to host, try next host in the list.
         }
 
-        // This is reached if either all URIs failed or the maximum number of attempts is reached.
-        throw $e;
-    });
+        return new ClientSocket($socket);
+    }
+
+    // This is reached if either all URIs failed or the maximum number of attempts is reached.
+    throw $e;
 }
 
 /**
@@ -189,59 +194,54 @@ function connect(string $uri, ClientConnectContext $socketContext = null, Cancel
  * @param string               $uri
  * @param ClientConnectContext $socketContext
  * @param ClientTlsContext     $tlsContext
- * @param CancellationToken    $token
+ * @param Token                $token
  *
- * @return Promise<ClientSocket>
+ * @return ClientSocket
+ *
+ * @throws CancelledException If the operation was cancelled.
  */
 function cryptoConnect(
     string $uri,
     ClientConnectContext $socketContext = null,
     ClientTlsContext $tlsContext = null,
-    CancellationToken $token = null
-): Promise {
-    return call(function () use ($uri, $socketContext, $tlsContext, $token) {
-        $tlsContext = $tlsContext ?? new ClientTlsContext;
+    Token $token = null
+): ClientSocket {
+    $tlsContext = $tlsContext ?? new ClientTlsContext;
 
-        if ($tlsContext->getPeerName() === null) {
-            $tlsContext = $tlsContext->withPeerName(\parse_url($uri, PHP_URL_HOST));
-        }
+    if ($tlsContext->getPeerName() === null) {
+        $tlsContext = $tlsContext->withPeerName(\parse_url($uri, PHP_URL_HOST));
+    }
 
-        /** @var ClientSocket $socket */
-        $socket = yield connect($uri, $socketContext, $token);
+    $socket = connect($uri, $socketContext, $token);
 
-        $promise = $socket->enableCrypto($tlsContext);
+    $awaitable = Task::async([$socket, 'enableCrypto'], $tlsContext);
 
-        if ($token) {
-            $deferred = new Deferred;
-            $id = $token->subscribe([$deferred, "fail"]);
+    if ($token) {
+        $deferred = new Deferred;
+        $id = $token->subscribe([$deferred, "fail"]);
 
-            $promise->onResolve(function ($exception) use ($id, $token, $deferred) {
-                if ($token->isRequested()) {
-                    return;
-                }
+        Deferred::transform($awaitable, function ($exception) use ($id, $token, $deferred) {
+            $token->throwIfRequested();
+            $token->unsubscribe($id);
 
-                $token->unsubscribe($id);
-
-                if ($exception) {
-                    $deferred->fail($exception);
-                    return;
-                }
-
+            if ($exception) {
+                $deferred->fail($exception);
+            } else {
                 $deferred->resolve();
-            });
+            }
+        });
 
-            $promise = $deferred->promise();
-        }
+        $awaitable = $deferred->awaitable();
+    }
 
-        try {
-            yield $promise;
-        } catch (\Throwable $exception) {
-            $socket->close();
-            throw $exception;
-        }
+    try {
+        Task::await($awaitable);
+    } catch (\Throwable $exception) {
+        $socket->close();
+        throw $exception;
+    }
 
-        return $socket;
-    });
+    return $socket;
 }
 
 /**
@@ -251,7 +251,8 @@ function cryptoConnect(
  *
  * @throws \Amp\Socket\SocketException If creating the sockets fails.
  */
-function pair(): array {
+function pair(): array
+{
     if (($sockets = @\stream_socket_pair(\stripos(PHP_OS, "win") === 0 ? STREAM_PF_INET : STREAM_PF_UNIX, STREAM_SOCK_STREAM, STREAM_IPPROTO_IP)) === false) {
         $message = "Failed to create socket pair.";
         if ($error = \error_get_last()) {

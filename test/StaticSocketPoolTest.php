@@ -6,21 +6,24 @@ use Amp\PHPUnit\TestCase;
 use Amp\Socket\ClientSocket;
 use Amp\Socket\SocketPool;
 use Amp\Socket\StaticSocketPool;
+use Concurrent\Deferred;
 
 class StaticSocketPoolTest extends TestCase {
-    public function testCheckout() {
+    public function testCheckout(): void
+    {
         $underlyingSocketPool = $this->prophesize(SocketPool::class);
         $staticSocketPool = new StaticSocketPool('override-uri', $underlyingSocketPool->reveal());
 
-        $expected = new \Amp\LazyPromise(function () {});
-        $underlyingSocketPool->checkout('override-uri', null)->shouldBeCalled()->willReturn($expected);
+        $mock = $this->createMock(ClientSocket::class);
+        $underlyingSocketPool->checkout('override-uri', null)->shouldBeCalled()->willReturn($mock);
 
         $returned = $staticSocketPool->checkout('test-url');
 
-        self::assertEquals($expected, $returned);
+        self::assertEquals($mock, $returned);
     }
 
-    public function testCheckin() {
+    public function testCheckin(): void
+    {
         $underlyingSocketPool = $this->prophesize(SocketPool::class);
         $staticSocketPool = new StaticSocketPool('override-uri', $underlyingSocketPool->reveal());
 
@@ -30,7 +33,8 @@ class StaticSocketPoolTest extends TestCase {
         $staticSocketPool->checkin($clientSocket);
     }
 
-    public function testClear() {
+    public function testClear(): void
+    {
         $underlyingSocketPool = $this->prophesize(SocketPool::class);
         $staticSocketPool = new StaticSocketPool('override-uri', $underlyingSocketPool->reveal());
 

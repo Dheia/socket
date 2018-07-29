@@ -5,18 +5,22 @@ namespace Amp\Socket\Test;
 use Amp\Socket\ClientSocket;
 use Amp\Socket\ClientTlsContext;
 use PHPUnit\Framework\TestCase;
+use function Amp\Socket\connect;
+use function Amp\Socket\cryptoConnect;
 
-class IntegrationTest extends TestCase {
+class IntegrationTest extends TestCase
+{
     /**
      * @dataProvider provideConnectArgs
      */
-    public function testConnect($uri) {
-        $promise = \Amp\Socket\connect($uri);
-        $sock = \Amp\Promise\wait($promise);
+    public function testConnect($uri): void
+    {
+        $sock = connect($uri);
         $this->assertInstanceOf(ClientSocket::class, $sock);
     }
 
-    public function provideConnectArgs() {
+    public function provideConnectArgs(): array
+    {
         return [
             ['www.google.com:80'],
             ['www.yahoo.com:80'],
@@ -26,13 +30,14 @@ class IntegrationTest extends TestCase {
     /**
      * @dataProvider provideCryptoConnectArgs
      */
-    public function testCryptoConnect($uri) {
-        $promise = \Amp\Socket\cryptoConnect($uri);
-        $sock = \Amp\Promise\wait($promise);
+    public function testCryptoConnect($uri): void
+    {
+        $sock = cryptoConnect($uri);
         $this->assertInstanceOf(ClientSocket::class, $sock);
     }
 
-    public function provideCryptoConnectArgs() {
+    public function provideCryptoConnectArgs(): array
+    {
         return [
             ['stackoverflow.com:443'],
             ['github.com:443'],
@@ -40,24 +45,22 @@ class IntegrationTest extends TestCase {
         ];
     }
 
-    public function testNoRenegotiationForEqualOptions() {
-        $promise = \Amp\socket\cryptoConnect('www.google.com:443');
-        /** @var ClientSocket $sock */
-        $socket = \Amp\Promise\wait($promise);
+    public function testNoRenegotiationForEqualOptions(): void
+    {
+        $socket = cryptoConnect('www.google.com:443');
         // For this case renegotiation not needed because options is equals
-        $promise = $socket->enableCrypto((new ClientTlsContext)->withPeerName("www.google.com"));
-        $this->assertNull(\Amp\Promise\wait($promise));
+        $socket->enableCrypto((new ClientTlsContext)->withPeerName("www.google.com"));
+        $this->assertTrue(true);
     }
 
-    public function testRenegotiation() {
+    public function testRenegotiation(): void
+    {
         $this->markTestSkipped("Expected failure: proper renegotiation does not work yet");
 
-        $promise = \Amp\Socket\cryptoConnect('www.google.com:443', null, (new ClientTlsContext)->withPeerName("www.google.com"));
-        $sock = \Amp\Promise\wait($promise);
+        $sock = cryptoConnect('www.google.com:443', null, (new ClientTlsContext)->withPeerName("www.google.com"));
 
         // force renegotiation by different option...
-        $promise = $sock->enableCrypto((new ClientTlsContext)->withoutPeerVerification());
-        \Amp\Promise\wait($promise);
+        $sock->enableCrypto((new ClientTlsContext)->withoutPeerVerification());
 
         $this->assertInstanceOf(ClientSocket::class, $sock);
     }

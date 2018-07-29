@@ -3,8 +3,6 @@
 namespace Amp\Socket;
 
 use Amp\ByteStream\ClosedException;
-use Amp\Failure;
-use Amp\Promise;
 
 class ClientSocket extends Socket {
     /**
@@ -12,13 +10,13 @@ class ClientSocket extends Socket {
      *
      * @param ClientTlsContext|null $tlsContext
      */
-    public function enableCrypto(ClientTlsContext $tlsContext = null): Promise {
+    public function enableCrypto(ClientTlsContext $tlsContext = null): void {
         if (($resource = $this->getResource()) === null) {
-            return new Failure(new ClosedException("The socket has been closed"));
+            throw new ClosedException("The socket has been closed");
         }
 
         $tlsContext = $tlsContext ?? new ClientTlsContext;
 
-        return Internal\enableCrypto($resource, $tlsContext->toStreamContextArray());
+        Internal\enableCrypto($resource, $tlsContext->toStreamContextArray());
     }
 }
