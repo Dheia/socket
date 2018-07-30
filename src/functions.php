@@ -70,6 +70,7 @@ function listen(string $uri, ServerListenContext $socketContext = null, ServerTl
  *
  * @return ClientSocket
  *
+ * @throws ConnectException
  * @throws CancelledException If the operation was cancelled.
  */
 function connect(string $uri, ClientConnectContext $socketContext = null, Token $token = null): ClientSocket
@@ -91,7 +92,11 @@ function connect(string $uri, ClientConnectContext $socketContext = null, Token 
         $uris = [$uri];
     } else {
         // Host is not an IP address, so resolve the domain name.
-        $records = Dns\resolve($host, $socketContext->getDnsTypeRestriction());
+        try {
+            $records = Dns\resolve($host, $socketContext->getDnsTypeRestriction());
+        } catch (Dns\ResolutionException $dnsError) {
+            throw new ConnectException("Connection to {$host} failed due to a DNS resolution error: " . $dnsError->getMessage(), 0, $dnsError);
+        }
 
         // Usually the faster response should be preferred, but we don't have a reliable way of determining IPv6
         // support, so we always prefer IPv4 here.

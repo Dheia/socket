@@ -22,6 +22,7 @@ interface SocketPool
      *
      * @return ClientSocket Socket instance once a connection is available.
      *
+     * @throws ConnectException
      * @throws CancelledException If the operation is cancelled.
      */
     public function checkout(string $uri, Token $token = null): ClientSocket;
